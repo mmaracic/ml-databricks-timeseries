@@ -1,0 +1,12 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Load .env variables with python-dotenv",
+            "type": "shell",
+            "command": "poetry run dotenv run -- python -c \"import os; print(os.environ)\"",
+            "group": "build",
+            "problemMatcher": []
+        }
+    ]
+}

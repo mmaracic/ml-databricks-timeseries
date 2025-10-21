@@ -38,3 +38,27 @@ To activate the virtual environment use:
 poetry env activate
 ```
 After activation the venv is not visible in the terminal prompt.
+
+## Databricks
+To connect to Databricks workspace use in a notebook or python filess:
+```python
+mlflow.login()
+```
+Interactive authentication input will pop up in VSCode that will ask for Databricks host URL and token.
+Token can be created in Databricks workspace by navigating to User Settings -> Access Tokens -> Generate New Token.  
+Url is databricks workspace url, e.g. `https://<your-workspace>.cloud.databricks.com`.  
+After successful login the credentials are stored securely in local profile file and can be used in future sessions without re-authentication.
+
+## Environment variables
+### Local development
+Environment variables are stored in `.env` file that is not committed to version control for security reasons.  
+A sample file `.env-sample` is provided that contains the structure of the `.env` file.  
+Copy the sample file to `.env` and fill in the required values before running
+Load environment variables in notebooks or python files with:
+```python
+from dotenv import load_dotenv
+load_dotenv()
+```
+### Shared / production environment
+Environment file pattern should not be used in shared or production environments. Use databricks secrets:  
+https://medium.com/@generative_ai/environment-variables-setting-in-databricks-dde16e3c3888
