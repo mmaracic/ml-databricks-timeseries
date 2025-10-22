@@ -63,10 +63,42 @@ load_dotenv()
 Environment file pattern should not be used in shared or production environments. Use databricks secrets:  
 https://medium.com/@generative_ai/environment-variables-setting-in-databricks-dde16e3c3888
 
+## Performance metrics
+Logging and publishing 70 ARIMA models to Databricks MLflow tracking server took around 20 minutes. Training the models themselves takes 40 seconds.
+
 ## Problems
-* ARIMA model fails to log to Databricks with error:
+### ARIMA model fails to log to Databricks with error:
 ```
 Failed to train model for store 0, product 0: 'ARIMA' object has no attribute 'save'
 ```
-Possible solution is to create model like a script (Models from code):
+Models of different libraries are saved in different ways:
+https://medium.com/fintechexplained/how-to-save-trained-machine-learning-models-649c3ad1c018
+
+MLFlow has support for different libraries - different log methods.
+
+But also libraries save models in different ways:  
+In statmodels we save the result of fit() method:
+```python
+model = ARIMA(endog=train_data, order=(p,d,q))
+fitted_model = model.fit()
+fitted_model.save("arima_model.pkl")
+```
+In scikit-learn we save the model object itself:
+```python
+from sklearn.ensemble import RandomForestRegressor
+model = RandomForestRegressor()
+model.fit(X_train, y_train)
+import joblib
+joblib.dump(model, 'rf_model.pkl')
+```
+
+Backup solution is to create model like a script (Models from code):
 https://www.mlflow.org/docs/latest/ml/model/models-from-code/
+
+### We can not register our custom model in Model Registry (because of incorrect name)
+
+It is possible even in Community edition:  
+* Registering models can be done at the same time when logging the model with log_model() function.
+* Model Registry URI is the same as tracking URI, no need to set it separately.
+* log_model() function has to contain parameter `registered_model_name` so that the model can be registered while logging it.
+* Registered model name has to have a qualified name - <workspace>.<schema>.<model_name> and by default workspace name is "workspace" and schema is "default". So the full name is "workspace.public.<model_name>".
