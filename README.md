@@ -49,8 +49,8 @@ Token can be created in Databricks workspace by navigating to User Settings -> A
 Url is databricks workspace url, e.g. `https://<your-workspace>.cloud.databricks.com`.  
 After successful login the credentials are stored securely in local profile file and can be used in future sessions without re-authentication.
 
-## Environment variables
-### Local development
+### Environment variables
+#### Local development
 Environment variables are stored in `.env` file that is not committed to version control for security reasons.  
 A sample file `.env-sample` is provided that contains the structure of the `.env` file.  
 Copy the sample file to `.env` and fill in the required values before running
@@ -59,6 +59,14 @@ Load environment variables in notebooks or python files with:
 from dotenv import load_dotenv
 load_dotenv()
 ```
-### Shared / production environment
+#### Shared / production environment
 Environment file pattern should not be used in shared or production environments. Use databricks secrets:  
 https://medium.com/@generative_ai/environment-variables-setting-in-databricks-dde16e3c3888
+
+## Problems
+* ARIMA model fails to log to Databricks with error:
+```
+Failed to train model for store 0, product 0: 'ARIMA' object has no attribute 'save'
+```
+Possible solution is to create model like a script (Models from code):
+https://www.mlflow.org/docs/latest/ml/model/models-from-code/
