@@ -1,0 +1,36 @@
+meta {
+  name: ARIMA-0-0
+  type: http
+  seq: 1
+}
+
+post {
+  url: https://dbc-7d1169bb-4536.cloud.databricks.com/serving-endpoints/arima-0-0/invocations
+  body: json
+  auth: basic
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:basic {
+  username: token
+  password: 
+}
+
+body:json {
+  {
+      "dataframe_split": {
+        "columns": [
+          "start", "end"
+        ],
+        "data": [[1, 365]]
+      }
+    }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
