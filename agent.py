@@ -9,12 +9,13 @@ import openai
 from openai.types.responses import FunctionToolParam
 from mlflow.entities import SpanType
 from mlflow.pyfunc.model import ResponsesAgent
+from mlflow.types.responses_helpers import ResponseOutputItemDoneEvent
 from mlflow.types.responses import (
     ResponsesAgentRequest,
     ResponsesAgentResponse,
     ResponsesAgentStreamEvent,
 )
-from openai import OpenAI
+from openai import AzureOpenAI
 from pydantic import BaseModel
 
 OUTPUT_ITEM_DONE = "response.output_item.done"
@@ -32,31 +33,35 @@ class ToolInfo(BaseModel):
     exec_fn: Callable
 
 
-class ToolCallingAgent(ResponsesAgent):
+class ToolCallingAgentNoMemory(ResponsesAgent):
     """
     Class representing a tool-calling Agent
     """
-    client: OpenAI
+    client: AzureOpenAI
     _tools_dict: dict[str, ToolInfo]
     model: str
 
-    def __init__(self, model: str, tools: list[ToolInfo]):
+    def __init__(self, api_key: str, model: str, tools: list[ToolInfo]):
         """Initializes the ToolCallingAgent with tools."""
-        self.model = model
-        self.client = OpenAI()
+        self.client = AzureOpenAI(
+            api_version="2024-12-01-preview",
+            azure_endpoint="https://mm-agents-resource2.cognitiveservices.azure.com/",
+            api_key=api_key
+        )
         self._tools_dict = {tool.name: tool for tool in tools}
+        self.model = model
 
     def get_tool_specs(self) -> list[FunctionToolParam]:
         """Returns tool specifications in the format OpenAI expects."""
         return [tool_info.spec for tool_info in self._tools_dict.values()]
 
-    @mlflow.trace(span_type=SpanType.TOOL)
+    #@mlflow.trace(span_type=SpanType.TOOL)
     def execute_tool(self, tool_name: str, args: dict) -> Any:
         """Executes the specified tool with the given arguments."""
         return self._tools_dict[tool_name].exec_fn(**args)
 
     @backoff.on_exception(backoff.expo, openai.RateLimitError)
-    @mlflow.trace(span_type=SpanType.LLM)
+    #@mlflow.trace(span_type=SpanType.LLM)
     def call_llm(self, input_messages) -> ResponsesAgentStreamEvent:
         return ResponsesAgentStreamEvent(
             type=OUTPUT_ITEM_DONE,
@@ -109,7 +114,8 @@ class ToolCallingAgent(ResponsesAgent):
                 yield tool_call_res
             else:
                 llm_output = self.call_llm(input_messages=input_messages)
-                input_messages.append(llm_output)
+                if llm_output.custom_outputs:
+                    input_messages.append(llm_output.custom_outputs)
                 yield ResponsesAgentStreamEvent(
                     type=OUTPUT_ITEM_DONE,
                     custom_outputs={
@@ -134,10 +140,10 @@ class ToolCallingAgent(ResponsesAgent):
             }
         )
 
-    @mlflow.trace(span_type=SpanType.AGENT)
+    #@mlflow.trace(span_type=SpanType.AGENT)
     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
         outputs = [
-            event.item
+            ResponseOutputItemDoneEvent(**event.model_dump_compat()).item
             for event in self.predict_stream(request)
             if event.type == "response.output_item.done"
         ]
@@ -145,7 +151,7 @@ class ToolCallingAgent(ResponsesAgent):
             output=outputs, custom_outputs=request.custom_inputs
         )
 
-    @mlflow.trace(span_type=SpanType.AGENT)
+    #@mlflow.trace(span_type=SpanType.AGENT)
     def predict_stream(
         self, request: ResponsesAgentRequest
     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
@@ -177,9 +183,7 @@ tools = [
     )
 ]
 
-os.environ["OPENAI_API_KEY"] = "your OpenAI API key"
-
 SYSTEM_PROMPT = "You are a helpful assistant that can call tools to get information."
 mlflow.openai.autolog()
-AGENT = ToolCallingAgent(model="gpt-4o", tools=tools)
+AGENT = ToolCallingAgentNoMemory(api_key=os.environ["OPENAI_API_KEY"], model="gpt-5-nano", tools=tools)
 mlflow.models.set_model(AGENT)
