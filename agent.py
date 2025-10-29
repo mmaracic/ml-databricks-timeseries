@@ -6,16 +6,23 @@ from uuid import uuid4
 import backoff
 import mlflow
 import openai
-from openai.types.responses import FunctionToolParam
+from openai.types.responses import FunctionToolParam, ResponseOutputItem
 from mlflow.entities import SpanType
 from mlflow.pyfunc.model import ResponsesAgent
-from mlflow.types.responses_helpers import ResponseOutputItemDoneEvent
+from mlflow.types.responses_helpers import (
+    ResponseOutputItemDoneEvent,
+    Message,
+    OutputItem,
+    ResponseOutputMessage,
+    ResponseFunctionToolCall,
+    FunctionCallOutput
+)
 from mlflow.types.responses import (
     ResponsesAgentRequest,
     ResponsesAgentResponse,
     ResponsesAgentStreamEvent,
 )
-from openai import AzureOpenAI
+from openai import OpenAI
 from pydantic import BaseModel
 
 OUTPUT_ITEM_DONE = "response.output_item.done"
@@ -37,15 +44,14 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
     """
     Class representing a tool-calling Agent
     """
-    client: AzureOpenAI
+    client: OpenAI
     _tools_dict: dict[str, ToolInfo]
     model: str
 
     def __init__(self, api_key: str, model: str, tools: list[ToolInfo]):
         """Initializes the ToolCallingAgent with tools."""
-        self.client = AzureOpenAI(
-            api_version="2024-12-01-preview",
-            azure_endpoint="https://mm-agents-resource2.cognitiveservices.azure.com/",
+        self.client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
             api_key=api_key
         )
         self._tools_dict = {tool.name: tool for tool in tools}
@@ -55,57 +61,62 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
         """Returns tool specifications in the format OpenAI expects."""
         return [tool_info.spec for tool_info in self._tools_dict.values()]
 
+    @backoff.on_exception(backoff.expo, openai.RateLimitError)
+    #@mlflow.trace(span_type=SpanType.LLM)
+    def call_llm(self, input_messages) -> dict[str, Any]:
+        response=self.get_llm_response(input_messages=input_messages)
+        return response.model_dump(exclude_none=True)
+
+    def get_llm_response(self, input_messages: list[Message | OutputItem]) -> ResponseOutputItem:
+        """
+        Call the LLM with the provided input messages and return the response.
+        """
+        return self.client.responses.create(
+                    model=self.model,
+                    input=[m.model_dump(exclude_none=True) for m in input_messages],
+                    tools=self.get_tool_specs(),
+                ).output[0]
+
+    def handle_tool_call(self, tool_call: Message | OutputItem) -> ResponsesAgentStreamEvent:
+        """
+        Execute tool calls and return a ResponsesAgentStreamEvent w/ tool output
+        """
+        if isinstance(tool_call, ResponseFunctionToolCall):
+            args = json.loads(tool_call.arguments)
+            result = str(self.execute_tool(tool_name=tool_call.name, args=args))
+
+            tool_call_output = FunctionCallOutput(
+                type="function_call_output",
+                call_id=tool_call.call_id,
+                output=result,
+            )
+            return ResponsesAgentStreamEvent(
+                type=OUTPUT_ITEM_DONE,
+                item=tool_call_output
+            )
+        else:
+            raise ValueError("Tool call must be of type ResponseFunctionToolCall")
+    
     #@mlflow.trace(span_type=SpanType.TOOL)
     def execute_tool(self, tool_name: str, args: dict) -> Any:
         """Executes the specified tool with the given arguments."""
         return self._tools_dict[tool_name].exec_fn(**args)
 
-    @backoff.on_exception(backoff.expo, openai.RateLimitError)
-    #@mlflow.trace(span_type=SpanType.LLM)
-    def call_llm(self, input_messages) -> ResponsesAgentStreamEvent:
-        return ResponsesAgentStreamEvent(
-            type=OUTPUT_ITEM_DONE,
-            custom_outputs=self.client.responses.create(
-                model=self.model,
-                input=input_messages,
-                tools=self.get_tool_specs(),
-            )
-            .output[0]
-            .model_dump(exclude_none=True)
-        )
-
-    def handle_tool_call(self, tool_call: dict[str, Any]) -> ResponsesAgentStreamEvent:
-        """
-        Execute tool calls and return a ResponsesAgentStreamEvent w/ tool output
-        """
-        args = json.loads(tool_call["arguments"])
-        result = str(self.execute_tool(tool_name=tool_call["name"], args=args))
-
-        tool_call_output = {
-            "type": "function_call_output",
-            "call_id": tool_call["call_id"],
-            "output": result,
-        }
-        return ResponsesAgentStreamEvent(
-            type=OUTPUT_ITEM_DONE,
-            custom_outputs={
-                "item": tool_call_output
-            }
-        )
 
     def call_and_run_tools(
         self,
-        input_messages: list[dict[str, str]],
+        input_messages: list[Message | OutputItem],
         max_iter: int = 10,
     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
         for _ in range(max_iter):
             last_msg = input_messages[-1]
             if (
-                last_msg.get("type", None) == "message"
-                and last_msg.get("role", None) == "assistant"
+                last_msg.type == "message"
+                and isinstance(last_msg, ResponseOutputMessage)
+                and last_msg.role == "assistant"
             ):
                 return
-            if last_msg.get("type", None) == "function_call":
+            if last_msg.type == "function_call":
                 tool_call_res = self.handle_tool_call(last_msg)
                 output = tool_call_res.custom_outputs
                 output_item = output.get("item") if output else None
@@ -114,29 +125,24 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
                 yield tool_call_res
             else:
                 llm_output = self.call_llm(input_messages=input_messages)
-                if llm_output.custom_outputs:
-                    input_messages.append(llm_output.custom_outputs)
+                input_messages.append(llm_output)
                 yield ResponsesAgentStreamEvent(
                     type=OUTPUT_ITEM_DONE,
-                    custom_outputs={
-                        "item": llm_output,
-                    }
+                    item=llm_output,
                 )
 
         yield ResponsesAgentStreamEvent(
             type=OUTPUT_ITEM_DONE,
-            custom_outputs={
-                "item": {
-                    "id": str(uuid4()),
-                    "content": [
-                        {
-                            "type": "output_text",
-                            "text": "Max iterations reached. Stopping.",
-                        }
-                    ],
-                    "role": "assistant",
-                    "type": "message",
-                },
+            item={
+                "id": str(uuid4()),
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "Max iterations reached. Stopping.",
+                    }
+                ],
+                "role": "assistant",
+                "type": "message",
             }
         )
 
@@ -155,8 +161,8 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
     def predict_stream(
         self, request: ResponsesAgentRequest
     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
-        input_messages = [{"role": "system", "content": SYSTEM_PROMPT}] + [
-            i.model_dump() for i in request.input
+        input_messages = [Message(role="system", content=SYSTEM_PROMPT)] + [
+            i for i in request.input
         ]
         yield from self.call_and_run_tools(input_messages=input_messages)
 
