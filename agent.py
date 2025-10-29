@@ -15,7 +15,7 @@ from mlflow.types.responses import (
     ResponsesAgentResponse,
     ResponsesAgentStreamEvent,
 )
-from openai import AzureOpenAI
+from openai import OpenAI
 from pydantic import BaseModel
 
 OUTPUT_ITEM_DONE = "response.output_item.done"
@@ -37,15 +37,14 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
     """
     Class representing a tool-calling Agent
     """
-    client: AzureOpenAI
+    client: OpenAI
     _tools_dict: dict[str, ToolInfo]
     model: str
 
     def __init__(self, api_key: str, model: str, tools: list[ToolInfo]):
         """Initializes the ToolCallingAgent with tools."""
-        self.client = AzureOpenAI(
-            api_version="2024-12-01-preview",
-            azure_endpoint="https://mm-agents-resource2.cognitiveservices.azure.com/",
+        self.client = OpenAI(
+            base_url="https://openrouter.ai/api/v1",
             api_key=api_key
         )
         self._tools_dict = {tool.name: tool for tool in tools}
@@ -65,7 +64,7 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
     def call_llm(self, input_messages) -> ResponsesAgentStreamEvent:
         return ResponsesAgentStreamEvent(
             type=OUTPUT_ITEM_DONE,
-            custom_outputs=self.client.responses.create(
+            item=self.client.responses.create(
                 model=self.model,
                 input=input_messages,
                 tools=self.get_tool_specs(),
@@ -88,9 +87,7 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
         }
         return ResponsesAgentStreamEvent(
             type=OUTPUT_ITEM_DONE,
-            custom_outputs={
-                "item": tool_call_output
-            }
+            item=tool_call_output,
         )
 
     def call_and_run_tools(
@@ -115,17 +112,12 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
             else:
                 llm_output = self.call_llm(input_messages=input_messages)
                 if llm_output.custom_outputs:
-                    input_messages.append(llm_output.custom_outputs)
-                yield ResponsesAgentStreamEvent(
-                    type=OUTPUT_ITEM_DONE,
-                    custom_outputs={
-                        "item": llm_output,
-                    }
-                )
+                    input_messages.append(llm_output.item)
+                yield llm_output
 
         yield ResponsesAgentStreamEvent(
             type=OUTPUT_ITEM_DONE,
-            custom_outputs={
+            item={
                 "item": {
                     "id": str(uuid4()),
                     "content": [
