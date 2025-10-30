@@ -50,6 +50,7 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
 
     def __init__(self, base_url: str, api_key: str, model: str, tools: list[ToolInfo]):
         """Initializes the ToolCallingAgent with tools."""
+        logger.info("Initializing ToolCallingAgentNoMemory with model: %s", model)
         self.client = OpenAI(
             base_url=base_url,
             api_key=api_key

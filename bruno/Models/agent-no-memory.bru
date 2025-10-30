@@ -1,0 +1,29 @@
+meta {
+  name: agent-no-memory
+  type: http
+  seq: 3
+}
+
+post {
+  url: https://dbc-7d1169bb-4536.cloud.databricks.com/serving-endpoints/helpful-agent-no-memory/invocations
+  body: json
+  auth: basic
+}
+
+headers {
+  Content-Type: application/json
+}
+
+auth:basic {
+  username: token
+  password: 
+}
+
+body:json {
+  {}
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
