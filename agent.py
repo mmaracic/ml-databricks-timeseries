@@ -2,11 +2,13 @@ import json
 from typing import Any, Callable, Generator
 import os
 from uuid import uuid4
+import logging
 
 import backoff
 import mlflow
 import openai
 from openai.types.responses import FunctionToolParam
+
 from mlflow.entities import SpanType
 from mlflow.pyfunc.model import ResponsesAgent
 from mlflow.types.responses_helpers import ResponseOutputItemDoneEvent
@@ -18,7 +20,12 @@ from mlflow.types.responses import (
 from openai import OpenAI
 from pydantic import BaseModel
 
+
 OUTPUT_ITEM_DONE = "response.output_item.done"
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
 
 class ToolInfo(BaseModel):
     """
@@ -41,10 +48,10 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
     _tools_dict: dict[str, ToolInfo]
     model: str
 
-    def __init__(self, api_key: str, model: str, tools: list[ToolInfo]):
+    def __init__(self, base_url: str, api_key: str, model: str, tools: list[ToolInfo]):
         """Initializes the ToolCallingAgent with tools."""
         self.client = OpenAI(
-            base_url="https://openrouter.ai/api/v1",
+            base_url=base_url,
             api_key=api_key
         )
         self._tools_dict = {tool.name: tool for tool in tools}
@@ -60,17 +67,19 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
         return self._tools_dict[tool_name].exec_fn(**args)
 
     @backoff.on_exception(backoff.expo, openai.RateLimitError)
-    #@mlflow.trace(span_type=SpanType.LLM)
+    # @mlflow.trace(span_type=SpanType.LLM)
     def call_llm(self, input_messages) -> ResponsesAgentStreamEvent:
+        logger.info("Calling LLM with messages: %s", input_messages)
+        response = self.client.responses.create(
+            model=self.model,
+            input=input_messages,
+            tools=self.get_tool_specs(),
+        )
+        output = response.output[0]
+        logger.info("LLM output: %s", output)
         return ResponsesAgentStreamEvent(
             type=OUTPUT_ITEM_DONE,
-            item=self.client.responses.create(
-                model=self.model,
-                input=input_messages,
-                tools=self.get_tool_specs(),
-            )
-            .output[0]
-            .model_dump(exclude_none=True)
+            item=output.model_dump(exclude_none=True)
         )
 
     def handle_tool_call(self, tool_call: dict[str, Any]) -> ResponsesAgentStreamEvent:
@@ -95,8 +104,11 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
         input_messages: list[dict[str, str]],
         max_iter: int = 10,
     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
+        mlflow.log_text("Starting tool-calling agent loop.", "log.txt")
+        mlflow.log_text("Initial input messages: " + str(input_messages), "log.txt")
         for _ in range(max_iter):
             last_msg = input_messages[-1]
+            logger.info("Last message type: %s", last_msg.get("type", None))
             if (
                 last_msg.get("type", None) == "message"
                 and last_msg.get("role", None) == "assistant"
@@ -106,29 +118,28 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
                 tool_call_res = self.handle_tool_call(last_msg)
                 output = tool_call_res.custom_outputs
                 output_item = output.get("item") if output else None
+                mlflow.log_text("Tool call output: " + str(output_item), "log.txt")
                 if output_item:
                     input_messages.append(output_item)
                 yield tool_call_res
             else:
                 llm_output = self.call_llm(input_messages=input_messages)
-                if llm_output.custom_outputs:
+                if llm_output.item:
                     input_messages.append(llm_output.item)
                 yield llm_output
 
         yield ResponsesAgentStreamEvent(
             type=OUTPUT_ITEM_DONE,
             item={
-                "item": {
-                    "id": str(uuid4()),
-                    "content": [
-                        {
-                            "type": "output_text",
-                            "text": "Max iterations reached. Stopping.",
-                        }
-                    ],
-                    "role": "assistant",
-                    "type": "message",
-                },
+                "id": str(uuid4()),
+                "content": [
+                    {
+                        "type": "output_text",
+                        "text": "Max iterations reached. Stopping.",
+                    }
+                ],
+                "role": "assistant",
+                "type": "message",
             }
         )
 
@@ -155,27 +166,30 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
 
 tools = [
     ToolInfo(
-        name="get_weather",
+        name="get_time",
         spec={
             "type": "function",
-            "name": "get_weather",
-            "description": "Get current temperature for provided coordinates in celsius.",
+            "name": "get_time",
+            "description": "Get current time for the provided time zone.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "latitude": {"type": "number"},
-                    "longitude": {"type": "number"},
+                    "timezone": {"type": "string", "description": "Name of the time zone."},
                 },
-                "required": ["latitude", "longitude"],
+                "required": ["timezone"],
                 "additionalProperties": False,
             },
             "strict": True,
         },
-        exec_fn=lambda latitude, longitude: 70,  # dummy tool implementation
+        exec_fn=lambda timezone: __import__("datetime").datetime.now(__import__("pytz").timezone(timezone)).isoformat()
     )
 ]
 
 SYSTEM_PROMPT = "You are a helpful assistant that can call tools to get information."
 mlflow.openai.autolog()
-AGENT = ToolCallingAgentNoMemory(api_key=os.environ["OPENAI_API_KEY"], model="gpt-5-nano", tools=tools)
+AGENT = ToolCallingAgentNoMemory(
+    base_url=os.environ["BASE_URL"],
+    api_key=os.environ["OPENAI_API_KEY"],
+    model=os.environ["MODEL"],
+    tools=tools)
 mlflow.models.set_model(AGENT)
