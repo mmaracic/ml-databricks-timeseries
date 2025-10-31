@@ -63,6 +63,11 @@ load_dotenv()
 Environment file pattern should not be used in shared or production environments. Use databricks secrets:  
 https://medium.com/@generative_ai/environment-variables-setting-in-databricks-dde16e3c3888
 
+### Dependency management
+https://mlflow.org/docs/latest/ml/model/dependencies/#saving-code-dependencies  
+When logging any model the dependencies are inferred from the notebook or can be added manually. When additional python scripts with own dependencies (within the same folder) are used we can use log_model() parameter `infer_code_paths=True` to include dependencies from those scripts as well.  
+When including whole scripts folder we can use `code_paths=["./my_scripts.py"]` parameter to extract dependencies from the script.
+
 ## Performance metrics
 Logging and publishing 70 ARIMA models to Databricks MLflow tracking server took around 20 minutes. Training the models themselves takes 40 seconds.
 

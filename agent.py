@@ -18,6 +18,7 @@ from mlflow.types.responses import (
     ResponsesAgentStreamEvent,
 )
 from openai import OpenAI
+from openai.types.responses import ResponseOutputItem
 from pydantic import BaseModel
 
 
@@ -69,19 +70,16 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
 
     @backoff.on_exception(backoff.expo, openai.RateLimitError)
     # @mlflow.trace(span_type=SpanType.LLM)
-    def call_llm(self, input_messages) -> ResponsesAgentStreamEvent:
+    def call_llm(self, input_messages) -> list[ResponseOutputItem]:
         logger.info("Calling LLM with messages: %s", input_messages)
         response = self.client.responses.create(
             model=self.model,
             input=input_messages,
             tools=self.get_tool_specs(),
         )
-        output = response.output[0]
+        output = response.output
         logger.info("LLM output: %s", output)
-        return ResponsesAgentStreamEvent(
-            type=OUTPUT_ITEM_DONE,
-            item=output.model_dump(exclude_none=True)
-        )
+        return output
 
     def handle_tool_call(self, tool_call: dict[str, Any]) -> ResponsesAgentStreamEvent:
         """
@@ -103,7 +101,7 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
     def call_and_run_tools(
         self,
         input_messages: list[dict[str, str]],
-        max_iter: int = 10,
+        max_iter: int = 3,
     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
         mlflow.log_text("Starting tool-calling agent loop.", "log.txt")
         mlflow.log_text("Initial input messages: " + str(input_messages), "log.txt")
@@ -116,6 +114,7 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
             ):
                 return
             if last_msg.get("type", None) == "function_call":
+                logger.info("Handling tool call: %s", last_msg)
                 tool_call_res = self.handle_tool_call(last_msg)
                 output = tool_call_res.custom_outputs
                 output_item = output.get("item") if output else None
@@ -125,9 +124,13 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
                 yield tool_call_res
             else:
                 llm_output = self.call_llm(input_messages=input_messages)
-                if llm_output.item:
-                    input_messages.append(llm_output.item)
-                yield llm_output
+                if llm_output:
+                    input_messages.extend([item.model_dump() for item in llm_output])
+                yield ResponsesAgentStreamEvent(
+                    type=OUTPUT_ITEM_DONE,
+                    item=llm_output[-1].model_dump(exclude_none=True)
+                )
+
 
         yield ResponsesAgentStreamEvent(
             type=OUTPUT_ITEM_DONE,
