@@ -107,3 +107,26 @@ It is possible even in Community edition:
 * Model Registry URI is the same as tracking URI, no need to set it separately.
 * log_model() function has to contain parameter `registered_model_name` so that the model can be registered while logging it.
 * Registered model name has to have a qualified name - <workspace>.<schema>.<model_name> and by default workspace name is "workspace" and schema is "default". So the full name is "workspace.public.<model_name>".
+
+### MLflow model logging does not capture all dependencies from custom python model
+When the crash below happens the dependencies will fallback to 'cloudpickle==3.1.1' and mlflow and the model will fail to start when served due to missing dependencies.
+
+```
+2025/11/02 21:51:10 WARNING mlflow.utils.environment: Encountered an unexpected error while inferring pip requirements (model URI: /tmp/tmpq5q_33ck/model, flavor: python_function). Fall back to return ['cloudpickle==3.1.1']. Set logging level to DEBUG to see the full traceback. 
+2025/11/02 21:51:10 DEBUG mlflow.utils.environment: 
+Traceback (most recent call last):
+  File "/mnt/e/Projekti/ml/databricks-timeseries/.venv/lib/python3.12/site-packages/mlflow/utils/environment.py", line 434, in infer_pip_requirements
+    return _infer_requirements(
+           ^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/e/Projekti/ml/databricks-timeseries/.venv/lib/python3.12/site-packages/mlflow/utils/requirements_utils.py", line 495, in _infer_requirements
+    modules = _capture_imported_modules(model_uri, flavor, extra_env_vars=extra_env_vars)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/mnt/e/Projekti/ml/databricks-timeseries/.venv/lib/python3.12/site-packages/mlflow/utils/requirements_utils.py", line 391, in _capture_imported_modules
+    _run_command(
+  File "/mnt/e/Projekti/ml/databricks-timeseries/.venv/lib/python3.12/site-packages/mlflow/utils/requirements_utils.py", line 265, in _run_command
+    raise MlflowException(msg)
+mlflow.exceptions.MlflowException: Encountered an unexpected error while running ['/mnt/e/Projekti/ml/databricks-timeseries/.venv/bin/python', '/mnt/e/Projekti/ml/databricks-timeseries/.venv/lib/python3.12/site-packages/mlflow/utils/_capture_modules.py', '--model-path', '/tmp/tmpq5q_33ck/model', '--flavor', 'python_function', '--output-file', '/tmp/tmppln60pap/imported_modules.txt', '--error-file', '/tmp/tmppln60pap/error.txt', '--sys-path', '["/tmp/tmplas0wwjp/model/code", "/tmp/tmpgv63ggk5/model/code", "/usr/lib/python312.zip", "/usr/lib/python3.12", "/usr/lib/python3.12/lib-dynload", "", "/mnt/e/Projekti/ml/databricks-timeseries/.venv/lib/python3.12/site-packages"]']
+exit status: -9
+```
+* possible to extend timeout by ssetting environment variable `MLFLOW_REQUIREMENTS_INFERENCE_TIMEOUT` to higher value (default is 120 seconds).
+* possible that disk slowness or some kind of locks or resource limits are causing the problem.
