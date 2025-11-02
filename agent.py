@@ -23,6 +23,7 @@ from pydantic import BaseModel
 
 
 OUTPUT_ITEM_DONE = "response.output_item.done"
+LOG_FILE = "log.txt"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -45,6 +46,7 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
     """
     Class representing a tool-calling Agent
     """
+
     client: OpenAI
     _tools_dict: dict[str, ToolInfo]
     model: str
@@ -52,10 +54,7 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
     def __init__(self, base_url: str, api_key: str, model: str, tools: list[ToolInfo]):
         """Initializes the ToolCallingAgent with tools."""
         logger.info("Initializing ToolCallingAgentNoMemory with model: %s", model)
-        self.client = OpenAI(
-            base_url=base_url,
-            api_key=api_key
-        )
+        self.client = OpenAI(base_url=base_url, api_key=api_key)
         self._tools_dict = {tool.name: tool for tool in tools}
         self.model = model
 
@@ -63,7 +62,7 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
         """Returns tool specifications in the format OpenAI expects."""
         return [tool_info.spec for tool_info in self._tools_dict.values()]
 
-    #@mlflow.trace(span_type=SpanType.TOOL)
+    # @mlflow.trace(span_type=SpanType.TOOL)
     def execute_tool(self, tool_name: str, args: dict) -> Any:
         """Executes the specified tool with the given arguments."""
         return self._tools_dict[tool_name].exec_fn(**args)
@@ -103,22 +102,24 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
         input_messages: list[dict[str, str]],
         max_iter: int = 3,
     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
-        mlflow.log_text("Starting tool-calling agent loop.", "log.txt")
-        mlflow.log_text("Initial input messages: " + str(input_messages), "log.txt")
+        mlflow.log_text("Starting tool-calling agent loop.", LOG_FILE)
+        mlflow.log_text("Initial input messages: " + str(input_messages), LOG_FILE)
         for _ in range(max_iter):
             last_msg = input_messages[-1]
-            logger.info("Last message type: %s", last_msg.get("type", None))
-            if (
-                last_msg.get("type", None) == "message"
-                and last_msg.get("role", None) == "assistant"
-            ):
+            last_msg_type = last_msg.get("type", None)
+            last_msg_role = last_msg.get("role", None)
+            logger.info(
+                "Last message type: %s and role: %s", last_msg_type, last_msg_role
+            )
+            if last_msg_type == "message" and last_msg_role == "assistant":
+                logger.info("Last message is a final assistant output: %s", last_msg)
                 return
-            if last_msg.get("type", None) == "function_call":
+            if last_msg_type == "function_call":
                 logger.info("Handling tool call: %s", last_msg)
                 tool_call_res = self.handle_tool_call(last_msg)
                 output = tool_call_res.custom_outputs
                 output_item = output.get("item") if output else None
-                mlflow.log_text("Tool call output: " + str(output_item), "log.txt")
+                mlflow.log_text("Tool call output: " + str(output_item), LOG_FILE)
                 if output_item:
                     input_messages.append(output_item)
                 yield tool_call_res
@@ -128,9 +129,8 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
                     input_messages.extend([item.model_dump() for item in llm_output])
                 yield ResponsesAgentStreamEvent(
                     type=OUTPUT_ITEM_DONE,
-                    item=llm_output[-1].model_dump(exclude_none=True)
+                    item=llm_output[-1].model_dump(exclude_none=True),
                 )
-
 
         yield ResponsesAgentStreamEvent(
             type=OUTPUT_ITEM_DONE,
@@ -144,10 +144,10 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
                 ],
                 "role": "assistant",
                 "type": "message",
-            }
+            },
         )
 
-    #@mlflow.trace(span_type=SpanType.AGENT)
+    # @mlflow.trace(span_type=SpanType.AGENT)
     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
         outputs = [
             ResponseOutputItemDoneEvent(**event.model_dump_compat()).item
@@ -158,7 +158,7 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
             output=outputs, custom_outputs=request.custom_inputs
         )
 
-    #@mlflow.trace(span_type=SpanType.AGENT)
+    # @mlflow.trace(span_type=SpanType.AGENT)
     def predict_stream(
         self, request: ResponsesAgentRequest
     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
@@ -178,14 +178,19 @@ tools = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "timezone": {"type": "string", "description": "Name of the time zone."},
+                    "timezone": {
+                        "type": "string",
+                        "description": "Name of the time zone.",
+                    },
                 },
                 "required": ["timezone"],
                 "additionalProperties": False,
             },
             "strict": True,
         },
-        exec_fn=lambda timezone: __import__("datetime").datetime.now(__import__("pytz").timezone(timezone)).isoformat()
+        exec_fn=lambda timezone: __import__("datetime")
+        .datetime.now(__import__("pytz").timezone(timezone))
+        .isoformat(),
     )
 ]
 
@@ -195,5 +200,6 @@ AGENT = ToolCallingAgentNoMemory(
     base_url=os.environ["BASE_URL"],
     api_key=os.environ["OPENAI_API_KEY"],
     model=os.environ["MODEL"],
-    tools=tools)
+    tools=tools,
+)
 mlflow.models.set_model(AGENT)
