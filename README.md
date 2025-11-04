@@ -128,5 +128,21 @@ Traceback (most recent call last):
 mlflow.exceptions.MlflowException: Encountered an unexpected error while running ['/mnt/e/Projekti/ml/databricks-timeseries/.venv/bin/python', '/mnt/e/Projekti/ml/databricks-timeseries/.venv/lib/python3.12/site-packages/mlflow/utils/_capture_modules.py', '--model-path', '/tmp/tmpq5q_33ck/model', '--flavor', 'python_function', '--output-file', '/tmp/tmppln60pap/imported_modules.txt', '--error-file', '/tmp/tmppln60pap/error.txt', '--sys-path', '["/tmp/tmplas0wwjp/model/code", "/tmp/tmpgv63ggk5/model/code", "/usr/lib/python312.zip", "/usr/lib/python3.12", "/usr/lib/python3.12/lib-dynload", "", "/mnt/e/Projekti/ml/databricks-timeseries/.venv/lib/python3.12/site-packages"]']
 exit status: -9
 ```
-* possible to extend timeout by ssetting environment variable `MLFLOW_REQUIREMENTS_INFERENCE_TIMEOUT` to higher value (default is 120 seconds).
-* possible that disk slowness or some kind of locks or resource limits are causing the problem.
+For posterity purposes the command that hangs looks like this:
+```bash
+poetry run dotenv run -- /mnt/e/Projekti/ml/databricks-timeseries/.venv/bin/python \
+  /mnt/e/Projekti/ml/databricks-timeseries/.venv/lib/python3.12/site-packages/mlflow/utils/_capture_modules.py \
+  --model-path /mnt/e/Projekti/ml/databricks-timeseries/models/helpful-agent-no-memory-model \
+  --flavor python_function \
+  --output-file /tmp/tmpva4anlv7/imported_modules.txt \
+  --error-file /tmp/tmpva4anlv7/error.txt \
+  --sys-path '["/usr/lib/python312.zip", "/usr/lib/python3.12", "/usr/lib/python3.12/lib-dynload", "", "/mnt/e/Projekti/ml/databricks-timeseries/.venv/lib/python3.12/site-packages"]'
+```
+Possible solutions:
+https://mlflow.org/docs/latest/ml/model/dependencies/   
+* possible to extend timeout by ssetting environment variable `MLFLOW_REQUIREMENTS_INFERENCE_TIMEOUT` to higher value (default is 120 seconds). This solution didnt help even when extended to 20 minutes
+* possible that dependency inference fails because there is some mismatch in dependency versions. We can to use UV to lock down dependencies by specifying environment variable `MLFLOW_LOCK_MODEL_DEPENDENCIES=true`. This worked once but couldnt be reproduced later and even then some dependencies were missing.
+* Specify dependencies manually:
+  * Install poetry export plugin: `poetry self add poetry-plugin-export`
+  * Export dependencies to requirements.txt: `poetry export -f requirements.txt --output requirements.txt --without-hashes`
+  * When logging the model specify parameter `pip_requirements="requirements.txt"` and use requirements.txt in log_model() function. This solution is confirmed to work consistently.

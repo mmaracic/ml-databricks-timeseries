@@ -20,7 +20,13 @@ auth:basic {
 }
 
 body:json {
-  {}
+  {
+    "inputs":{
+      "input": [
+        {"role": "user", "content": "What is the full name of poet Byron?"}
+      ]
+    }
+  }
 }
 
 settings {

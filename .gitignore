@@ -5,3 +5,6 @@ __pycache__/
 .env
 data/
 models/
+
+#Poetry is used for dependency management
+requirements.txt
