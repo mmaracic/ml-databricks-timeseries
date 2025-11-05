@@ -173,25 +173,54 @@ tools = [
         name="get_time",
         spec={
             "type": "function",
-            "name": "get_time",
-            "description": "Get current time for the provided time zone.",
+            "name": "get_date_time",
+            "description": "Get current date and time",
             "parameters": {
                 "type": "object",
-                "properties": {
-                    "timezone": {
-                        "type": "string",
-                        "description": "Name of the time zone.",
-                    },
-                },
-                "required": ["timezone"],
+                "properties": {},
+                "required": [""],
                 "additionalProperties": False,
             },
             "strict": True,
         },
-        exec_fn=lambda timezone: __import__("datetime")
-        .datetime.now(__import__("pytz").timezone(timezone))
-        .isoformat(),
-    )
+        exec_fn=lambda: __import__("datetime").datetime.now().isoformat(),
+    ),
+    ToolInfo(
+        name="get_time",
+        spec={
+            "type": "function",
+            "name": "get_sales_prediction",
+            "description": "Get predicted sales for defined start date and end date.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "start": {
+                        "type": "string",
+                        "description": "Start date for the sales prediction.",
+                    },
+                    "end": {
+                        "type": "string",
+                        "description": "End date for the sales prediction.",
+                    },
+                },
+                "required": ["start", "end"],
+                "additionalProperties": False,
+            },
+            "strict": True,
+        },
+        exec_fn=lambda start, end: (
+            (
+                lambda requests, pd: requests.post(
+                    "https://dbc-7d1169bb-4536.cloud.databricks.com/serving-endpoints/arima-0-0/invocations",
+                    headers={"Content-Type": "application/json"},
+                    auth=("token", os.environ["DATABRICKS_API_TOKEN"]),
+                    data=pd.DataFrame({"start": [start], "end": [end]}).to_json(
+                        orient="split"
+                    ),
+                ).text
+            )(__import__("requests"), __import__("pandas"))
+        ),
+    ),
 ]
 
 SYSTEM_PROMPT = "You are a helpful assistant that can call tools to get information."
