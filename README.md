@@ -71,6 +71,13 @@ When including whole scripts folder we can use `code_paths=["./my_scripts.py"]` 
 ## Performance metrics
 Logging and publishing 70 ARIMA models to Databricks MLflow tracking server took around 20 minutes. Training the models themselves takes 40 seconds.
 
+## Notes about model registration
+
+When registering model with log_model() method, two parameters are important:
+* `registered_model_name` - full qualified name of the model in Model Registry, e.g. `workspace.default.ModelName`
+* `input_example` - example of input data for the model to be able to test the model after deployment. Input example should match the input format of the model. This attribute is mandatory to be able to register the model in Model Registry. Input is used during model logging to get the output and to define the model signature automatically so we dont have to create it manually (input_example or signature are mandatory). At the same time the model is also tested if it can produce output from the input example.
+* `pip_requirements` - to specify dependencies manually instead of inferring them automatically. This is useful when automatic inference fails or misses some dependencies.
+
 ## Problems
 ### ARIMA model fails to log to Databricks with error:
 ```
