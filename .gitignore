@@ -5,6 +5,7 @@ __pycache__/
 .env
 data/
 models/
+!bruno/models/
 
 #Poetry is used for dependency management
 requirements.txt

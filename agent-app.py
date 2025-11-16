@@ -28,4 +28,4 @@ async def agent_call(request: AgentCallRequest) -> dict[str, Any]:
         request=ResponsesAgentRequest(
             input=[Message(role="user", content=request.input_string)]
         )
-    ).model_dump_compat()
+    ).model_dump()

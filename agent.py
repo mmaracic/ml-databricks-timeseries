@@ -3,6 +3,9 @@ from typing import Any, Callable, Generator
 import os
 from uuid import uuid4
 import logging
+from datetime import datetime
+
+import requests
 
 import backoff
 import mlflow
@@ -11,7 +14,10 @@ from openai.types.responses import FunctionToolParam
 
 from mlflow.entities import SpanType
 from mlflow.pyfunc.model import ResponsesAgent
-from mlflow.types.responses_helpers import ResponseOutputItemDoneEvent
+from mlflow.types.responses_helpers import (
+    ResponseOutputItemDoneEvent,
+    FunctionCallOutput,
+)
 from mlflow.types.responses import (
     ResponsesAgentRequest,
     ResponsesAgentResponse,
@@ -23,6 +29,7 @@ from pydantic import BaseModel
 
 
 OUTPUT_ITEM_DONE = "response.output_item.done"
+FUNCTION_CALL_DONE = "response.function_call_arguments.done"
 LOG_FILE = "log.txt"
 
 logging.basicConfig(level=logging.INFO)
@@ -32,12 +39,10 @@ logger = logging.getLogger(__name__)
 class ToolInfo(BaseModel):
     """
     Class representing a tool for the agent.
-    - "name" (str): The name of the tool.
     - "spec" (dict): JSON description of the tool (matches OpenAI Responses format)
     - "exec_fn" (Callable): Function that implements the tool logic
     """
 
-    name: str
     spec: FunctionToolParam
     exec_fn: Callable
 
@@ -55,7 +60,7 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
         """Initializes the ToolCallingAgent with tools."""
         logger.info("Initializing ToolCallingAgentNoMemory with model: %s", model)
         self.client = OpenAI(base_url=base_url, api_key=api_key)
-        self._tools_dict = {tool.name: tool for tool in tools}
+        self._tools_dict = {tool.spec["name"]: tool for tool in tools}
         self.model = model
 
     def get_tool_specs(self) -> list[FunctionToolParam]:
@@ -69,41 +74,42 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
 
     @backoff.on_exception(backoff.expo, openai.RateLimitError)
     # @mlflow.trace(span_type=SpanType.LLM)
-    def call_llm(self, input_messages) -> list[ResponseOutputItem]:
+    def call_llm(
+        self, input_messages: list[dict[str, str]]
+    ) -> list[ResponseOutputItem]:
         logger.info("Calling LLM with messages: %s", input_messages)
         response = self.client.responses.create(
             model=self.model,
-            input=input_messages,
+            input=",".join(
+                [str(msg) for msg in input_messages]
+            ),  # Its critical to convert messages to a single string
             tools=self.get_tool_specs(),
         )
         output = response.output
         logger.info("LLM output: %s", output)
         return output
 
-    def handle_tool_call(self, tool_call: dict[str, Any]) -> ResponsesAgentStreamEvent:
+    def handle_tool_call(self, tool_call: dict[str, Any]) -> FunctionCallOutput:
         """
         Execute tool calls and return a ResponsesAgentStreamEvent w/ tool output
         """
         args = json.loads(tool_call["arguments"])
         result = str(self.execute_tool(tool_name=tool_call["name"], args=args))
 
-        tool_call_output = {
-            "type": "function_call_output",
-            "call_id": tool_call["call_id"],
-            "output": result,
-        }
-        return ResponsesAgentStreamEvent(
-            type=OUTPUT_ITEM_DONE,
-            item=tool_call_output,
-        )
+        return FunctionCallOutput(
+            call_id=tool_call["call_id"],
+            output=result,
+            status="completed",
+        )  # These params are required to be compatible with OpenAI input type FunctionCallOutput
 
     def call_and_run_tools(
         self,
         input_messages: list[dict[str, str]],
-        max_iter: int = 3,
+        max_iter: int = 10,
     ) -> Generator[ResponsesAgentStreamEvent, None, None]:
         mlflow.log_text("Starting tool-calling agent loop.", LOG_FILE)
         mlflow.log_text("Initial input messages: " + str(input_messages), LOG_FILE)
+
         for _ in range(max_iter):
             last_msg = input_messages[-1]
             last_msg_type = last_msg.get("type", None)
@@ -117,40 +123,44 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
             if last_msg_type == "function_call":
                 logger.info("Handling tool call: %s", last_msg)
                 tool_call_res = self.handle_tool_call(last_msg)
-                output = tool_call_res.custom_outputs
-                output_item = output.get("item") if output else None
-                mlflow.log_text("Tool call output: " + str(output_item), LOG_FILE)
-                if output_item:
-                    input_messages.append(output_item)
-                yield tool_call_res
+                logger.info("Tool call output: %s", tool_call_res)
+                input_messages.append(tool_call_res.model_dump())
+                yield ResponsesAgentStreamEvent(
+                    type=FUNCTION_CALL_DONE,
+                    item=tool_call_res.model_dump(exclude_none=True),
+                )
             else:
                 llm_output = self.call_llm(input_messages=input_messages)
-                if llm_output:
-                    input_messages.extend([item.model_dump() for item in llm_output])
+                last_msg = llm_output[-1].model_dump(exclude_none=True)
+                input_messages.extend([item.model_dump() for item in llm_output])
                 yield ResponsesAgentStreamEvent(
                     type=OUTPUT_ITEM_DONE,
-                    item=llm_output[-1].model_dump(exclude_none=True),
+                    item=last_msg,
                 )
 
-        yield ResponsesAgentStreamEvent(
-            type=OUTPUT_ITEM_DONE,
-            item={
-                "id": str(uuid4()),
-                "content": [
-                    {
-                        "type": "output_text",
-                        "text": "Max iterations reached. Stopping.",
-                    }
-                ],
-                "role": "assistant",
-                "type": "message",
-            },
-        )
+        last_msg = input_messages[-1]
+        last_msg_type = last_msg.get("type", None)
+        last_msg_role = last_msg.get("role", None)
+        if not (last_msg_type == "message" and last_msg_role == "assistant"):
+            yield ResponsesAgentStreamEvent(
+                type=OUTPUT_ITEM_DONE,
+                item={
+                    "id": str(uuid4()),
+                    "content": [
+                        {
+                            "type": "output_text",
+                            "text": "Max iterations reached. Stopping.",
+                        }
+                    ],
+                    "role": "assistant",
+                    "type": "message",
+                },
+            )
 
     # @mlflow.trace(span_type=SpanType.AGENT)
     def predict(self, request: ResponsesAgentRequest) -> ResponsesAgentResponse:
         outputs = [
-            ResponseOutputItemDoneEvent(**event.model_dump_compat()).item
+            ResponseOutputItemDoneEvent(**event.model_dump()).item
             for event in self.predict_stream(request)
             if event.type == "response.output_item.done"
         ]
@@ -170,7 +180,6 @@ class ToolCallingAgentNoMemory(ResponsesAgent):
 
 tools = [
     ToolInfo(
-        name="get_time",
         spec={
             "type": "function",
             "name": "get_date_time",
@@ -178,15 +187,14 @@ tools = [
             "parameters": {
                 "type": "object",
                 "properties": {},
-                "required": [""],
+                "required": [],
                 "additionalProperties": False,
             },
             "strict": True,
         },
-        exec_fn=lambda: __import__("datetime").datetime.now().isoformat(),
+        exec_fn=lambda: "Current date and time is: " + datetime.now().isoformat(),
     ),
     ToolInfo(
-        name="get_time",
         spec={
             "type": "function",
             "name": "get_sales_prediction",
@@ -196,11 +204,11 @@ tools = [
                 "properties": {
                     "start": {
                         "type": "string",
-                        "description": "Start date for the sales prediction.",
+                        "description": "Start date for the sales prediction in the format YYYY-MM-DD.",
                     },
                     "end": {
                         "type": "string",
-                        "description": "End date for the sales prediction.",
+                        "description": "End date for the sales prediction in the format YYYY-MM-DD.",
                     },
                 },
                 "required": ["start", "end"],
@@ -208,18 +216,15 @@ tools = [
             },
             "strict": True,
         },
-        exec_fn=lambda start, end: (
-            (
-                lambda requests, pd: requests.post(
-                    "https://dbc-7d1169bb-4536.cloud.databricks.com/serving-endpoints/arima-0-0/invocations",
-                    headers={"Content-Type": "application/json"},
-                    auth=("token", os.environ["DATABRICKS_API_TOKEN"]),
-                    data=pd.DataFrame({"start": [start], "end": [end]}).to_json(
-                        orient="split"
-                    ),
-                ).text
-            )(__import__("requests"), __import__("pandas"))
-        ),
+        exec_fn=lambda start, end: requests.post(
+            "https://dbc-7d1169bb-4536.cloud.databricks.com/serving-endpoints/arima-0-0/invocations",
+            headers={"Content-Type": "application/json"},
+            auth=("token", os.environ["DATABRICKS_API_TOKEN"]),
+            data={
+                "dataframe_split": {"columns": ["start", "end"], "data": [[start, end]]}
+            },
+            timeout=60,
+        ).text,
     ),
 ]
 

@@ -1,0 +1,26 @@
+meta {
+  name: local-agent-no-memory
+  type: http
+  seq: 4
+}
+
+post {
+  url: http://localhost:8000/agent-call
+  body: json
+  auth: none
+}
+
+headers {
+  Content-Type: application/json
+}
+
+body:json {
+  {
+    "input_string": "What are your sales predictions for next 5 days including today?"
+  }
+}
+
+settings {
+  encodeUrl: true
+  timeout: 0
+}
